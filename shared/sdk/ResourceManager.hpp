@@ -33,6 +33,9 @@ class ResourceManager {
 public:
     static ResourceManager* get();
     static void update_pointers();
+    // Some games/versions may not have a resolvable create_userdata implementation.
+    // This is intentionally resolved lazily to avoid noisy startup logs for games that don't support it.
+    static void update_userdata_pointers();
 
 public:
     sdk::Resource* create_resource(void* type_info, std::wstring_view name);
@@ -45,7 +48,7 @@ public:
     }
 
     static auto get_create_userdata_function() {
-        update_pointers();
+        update_userdata_pointers();
 
         return s_create_userdata_fn;
     }

@@ -22,6 +22,7 @@ void initialize_sdk() {
     utility::re_managed_object::detail::resolve_add_ref();
     utility::re_managed_object::detail::resolve_release();
 
+    // Only resolve create_resource eagerly; create_userdata is resolved lazily (and may be unavailable per-game/version).
     sdk::ResourceManager::update_pointers();
 }
 }

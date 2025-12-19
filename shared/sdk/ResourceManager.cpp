@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <spdlog/spdlog.h>
 #include <hde64.h>
 
@@ -81,7 +82,11 @@ sdk::Resource* ResourceManager::create_resource(void* type_info, std::wstring_vi
 // This one is a bit harder but there are a few functions called at the bottom of
 // createResource that are called in create_userdata
 intrusive_ptr<sdk::ManagedObject> ResourceManager::create_userdata(void* type_info, std::wstring_view name) {
-    update_pointers();
+    update_userdata_pointers();
+
+    if (s_create_userdata_fn == nullptr) {
+        return {};
+    }
 
     intrusive_ptr<sdk::ManagedObject> out{};
     s_create_userdata_fn(this, &out, type_info, name.data());
@@ -135,61 +140,84 @@ void ResourceManager::update_pointers() {
             s_create_resource_reference = ip;
             Resource::update_pointers();
             spdlog::info("[ResourceManager::create_resource] Found function at {:x}", (uintptr_t)s_create_resource_fn);
-            
-            // now find create_userdata, using the previous function as a reference to ignore
-            // since they both have the same pattern at the start of the function
-            const auto valid_patterns = {
-#if TDB_VER < 73
-                "66 83 F8 40 75 ? C6",
-                "66 83 F8 40 75 ? 48",
-#endif
-                "66 41 83 39 40" // DD2+
-            };
-
-            bool found = false;
-            bool exception_directory_maybe_removed = false;
-
-            for (const auto& pat : valid_patterns) {
-                for (auto ref = utility::scan(mod, pat); ref.has_value(); ref = utility::scan(*ref + 1, (mod_end - (*ref + 1)) - 100, pat)) {
-                    auto func = utility::find_function_start_with_call(*ref);
-
-                    if (func && *func != (uintptr_t)s_create_resource_fn) {
-                        if (std::abs((ptrdiff_t)(*func - (uintptr_t)s_create_resource_fn)) < 0x50) {
-                            spdlog::info("Exception directory may have been removed, falling back to int3 scan");
-                            exception_directory_maybe_removed = true;
-                            continue;
-                        }
-
-                        if (exception_directory_maybe_removed) {
-                            func = utility::scan_reverse(*func, 0x100, "CC CC CC");
-
-                            if (func) {
-                                *func += 3;
-                            } else {
-                                func = utility::scan_reverse(*ref, 0x100, "4C 89 4C");
-                            }
-                        }
-
-                        found = true;
-                        s_create_userdata_fn = (decltype(s_create_userdata_fn))*func;
-                        break;
-                    }
-                }
-
-                if (found) {
-                    break;
-                }
-            }
-
-            if (found) {
-                spdlog::info("[ResourceManager::create_userdata] Found function at {:x}", (uintptr_t)s_create_userdata_fn);
-            } else {
-                spdlog::error("[ResourceManager::create_userdata] Failed to find function!");
-            }
         } else {
             spdlog::error("[ResourceManager::create_resource] Failed to find function!");
             return;
         }
+    }
+}
+
+void ResourceManager::update_userdata_pointers() {
+    if (s_create_userdata_fn != nullptr) {
+        return;
+    }
+
+    static std::atomic_bool s_attempted{false};
+    if (s_attempted.exchange(true)) {
+        return;
+    }
+
+    // create_userdata resolution relies on knowing the create_resource function (used as a disambiguation reference).
+    update_pointers();
+
+    if (s_create_resource_fn == nullptr) {
+        return;
+    }
+
+    spdlog::info("[ResourceManager::create_userdata] Finding function...");
+
+    const auto mod = utility::get_executable();
+    const auto mod_size = *utility::get_module_size(mod);
+    const auto mod_end = (uintptr_t)mod + mod_size;
+
+    // Find create_userdata using create_resource as a reference to ignore since they both have similar prologues.
+    const auto valid_patterns = {
+#if TDB_VER < 73
+        "66 83 F8 40 75 ? C6",
+        "66 83 F8 40 75 ? 48",
+#endif
+        "66 41 83 39 40" // DD2+ (and newer)
+    };
+
+    bool found = false;
+    bool exception_directory_maybe_removed = false;
+
+    for (const auto& pat : valid_patterns) {
+        for (auto ref = utility::scan(mod, pat); ref.has_value(); ref = utility::scan(*ref + 1, (mod_end - (*ref + 1)) - 100, pat)) {
+            auto func = utility::find_function_start_with_call(*ref);
+
+            if (func && *func != (uintptr_t)s_create_resource_fn) {
+                if (std::abs((ptrdiff_t)(*func - (uintptr_t)s_create_resource_fn)) < 0x50) {
+                    spdlog::info("Exception directory may have been removed, falling back to int3 scan");
+                    exception_directory_maybe_removed = true;
+                    continue;
+                }
+
+                if (exception_directory_maybe_removed) {
+                    func = utility::scan_reverse(*func, 0x100, "CC CC CC");
+
+                    if (func) {
+                        *func += 3;
+                    } else {
+                        func = utility::scan_reverse(*ref, 0x100, "4C 89 4C");
+                    }
+                }
+
+                found = true;
+                s_create_userdata_fn = (decltype(s_create_userdata_fn))*func;
+                break;
+            }
+        }
+
+        if (found) {
+            break;
+        }
+    }
+
+    if (found) {
+        spdlog::info("[ResourceManager::create_userdata] Found function at {:x}", (uintptr_t)s_create_userdata_fn);
+    } else {
+        spdlog::error("[ResourceManager::create_userdata] Failed to find function!");
     }
 }
 
