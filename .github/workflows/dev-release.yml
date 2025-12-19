@@ -7,7 +7,9 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        target: [RE2, RE2_TDB66, RE3, RE3_TDB67, RE4, RE7, RE7_TDB49, RE8, DMC5, MHRISE, SF6, DD2, MHWILDS, PRAGMATA]
+        # In this fork we usually only need a single target for local verification.
+        # Keep the full matrix for other branches, but restrict the `mhwilds-test` branch to MHWILDS only.
+        target: ${{ fromJson(github.ref_name == 'mhwilds-test' && '["MHWILDS"]' || '["RE2","RE2_TDB66","RE3","RE3_TDB67","RE4","RE7","RE7_TDB49","RE8","DMC5","MHRISE","SF6","DD2","MHWILDS","PRAGMATA"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
