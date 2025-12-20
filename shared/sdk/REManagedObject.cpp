@@ -1,4 +1,5 @@
 #include <spdlog/spdlog.h>
+#include <atomic>
 
 #include "utility/Scan.hpp"
 #include "utility/Module.hpp"
@@ -21,6 +22,11 @@ static void (*release_func)(::REManagedObject*) = nullptr;
 namespace detail {
 void resolve_add_ref() {
     if (add_ref_func != nullptr) {
+        return;
+    }
+
+    static std::atomic_uint32_t s_attempts{0};
+    if (s_attempts.fetch_add(1) >= 3) {
         return;
     }
 
@@ -50,14 +56,20 @@ void resolve_release() {
         return;
     }
 
+    static std::atomic_uint32_t s_attempts{0};
+    if (s_attempts.fetch_add(1) >= 3) {
+        return;
+    }
+
     // We also need to resolve add_ref
     // because we need to make sure we don't resolve release to the same function.
     resolve_add_ref();
 
-    constexpr std::array<std::string_view, 3> possible_patterns{
+    constexpr std::array<std::string_view, 4> possible_patterns{
         "40 53 48 83 EC ? 8B 41 08 48 8B D9 85 C0 0F", // RE2+
         "40 53 48 83 EC ? 8B 41 08 48 8B D9 48 83 C1 08 85 C0 78", // RE7
-        "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 30 8B 41 08", // MHWILDS+ (or unoptimized compiler builds?)
+        "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 8B 41 08", // MHWILDS+ (/GS cookie, xor encoding A)
+        "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 44 24 ? 8B 41 08", // MHWILDS+ (/GS cookie, xor encoding B)
     };
 
     spdlog::info("[REManagedObject] Finding release function...");
@@ -95,6 +107,14 @@ void add_ref(REManagedObject* object) {
 
     detail::resolve_add_ref();
 
+    if (add_ref_func == nullptr) {
+        static std::atomic_bool s_warned_once{false};
+        if (!s_warned_once.exchange(true)) {
+            spdlog::error("[REManagedObject] add_ref function not resolved; skipping add_ref to avoid crash.");
+        }
+        return;
+    }
+
     //spdlog::info("Pushing: {} {} {:x}", (int32_t)object->referenceCount, utility::re_managed_object::get_type_definition(object)->get_full_name(), (uintptr_t)object);
 
 #if TDB_VER <= 49
@@ -114,6 +134,14 @@ void release(REManagedObject* object) {
     }
 
     detail::resolve_release();
+
+    if (release_func == nullptr) {
+        static std::atomic_bool s_warned_once{false};
+        if (!s_warned_once.exchange(true)) {
+            spdlog::error("[REManagedObject] release function not resolved; skipping release to avoid crash (may leak references).");
+        }
+        return;
+    }
 
     //spdlog::info("Popping: {} {} {:x}", (int32_t)object->referenceCount, utility::re_managed_object::get_type_definition(object)->get_full_name(), (uintptr_t)object);
 
